@@ -5,6 +5,48 @@ import socket
 import select
 import os
 
+#----/ Debugging /--------------------------------------------------------------------#
+def c(col): return "\33[0m" if col==0 else ("\33[3"+str(col)[0]+";4"+str(col)[1]+"m")
+class ContextManager:
+    ''' This is my debugger/context manager. I'm getting a lot of exceptions from both
+    Tcl and socket, and hate how messy the code looks with try/except clauses everywhere.
+    With this class I can simply add "with calm:" before any line I suspect might misbehave.
+    Or that's how it's meant to be, at least. This project is entirely tkinter based, so
+    since I don't use the terminal, I print all exceptions there, without them being in the
+    way, but it could just as easy be written out to a log file. An instance of this class
+    can be called with "dangerLevel" (1: Critical, 2: Trivial) and/or "contextComment".
+    The self.debugLevel setting takes a value between 0-2:
+    0: Silent, 1: Critical exceptions, 2: All exceptions '''
+    def __init__(self, dLev=1, comm="N/A"):
+        self.debugLevel = 2
+        self.contextComment,self.dangerLevel,self.ct,self.ex=comm, dLev, 0, False
+        self.levels = [f"{c('00')} Schrödingers Exception             {c('34')}",
+                       f"{c('10')} Potentially Troublesome Exception  {c('34')}",
+                       f"{c('20')} Probably Mostly Harmless Exception {c('34')}"]
+    def __call__(self,dangerLevel,contextComment):
+        self.dangerLevel,self.contextComment = dangerLevel,contextComment
+        return self
+    def __enter__(self): self.ct += 1
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.ex = True if (exc_type != None) else False
+        if (exc_type == None): self.ct -= 1
+        if (exc_type != None) and (self.debugLevel >= self.dangerLevel):
+            fileName = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+            print(f"{c(0)}  {'_'*31}{'_'*(len(str(self.ct)))}")
+            print(f"_/{c(34)} Context Manager - Exception #{self.ct} ",end='')
+            print(f"{c(0)}\\{'_'*(46-(len(str(self.ct))))}",end='')
+            print(f"{c(34)}\n\n {self.levels[self.dangerLevel]}")
+            print(f"\n  Type: \"{exc_type.__name__}\"\n\n  Value: \"{exc_val}\"")
+            print(f"\n  Doc string: \"{exc_val.__doc__}\"")
+            print(f"\n  Context Comment: {self.contextComment}")
+            print(f"\n\33[33m  File Name: {fileName}")
+            print(f"\n\33[33m  Line Number {exc_tb.tb_lineno}:\n\33[36m")
+            with open(__file__,"r") as src:
+                print("  "+dedent(src.readlines()[exc_tb.tb_lineno-1].rstrip()))
+            print(f"\33[33m{'~'*80}\33[0m\n")
+        return True
+calm = ContextManager()
+
 def senBlirAlltSvart(): # Clears the screen on Linux, Mac & Win.
     if (os.name == "posix"): os.system("clear")
     elif (platform.system() == "Windows"): os.system("cls")
@@ -20,26 +62,40 @@ serverSock.bind((serverIP, port))
 serverSock.listen(15)
 connections.append(serverSock)
 global addr
-global theWord
+
 
 senBlirAlltSvart()
 
 print(f"The game server is now live at {serverIP} on port {port}")
 
+class WordDealer(object):
+    def __init__(self):
+        self.theRandomWord = None
+        self.theOldWord = None
+        self.theWord = None
+        self.newWord()
 
-def newWord():
-    # The first line here is a supposedly relible way of getting the absolute path to this script.
-    __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
-    with open(os.path.join(__location__, "nouns.txt")) as wordFile:
-        wordList = wordFile.readlines()
-    return wordList[random.randrange(0,len(wordList))]
-theWord = newWord()
+    def newWord(self):
+        __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
+        with open(os.path.join(__location__, "nouns.txt")) as wordFile:
+            wordList = wordFile.readlines()
+        self.theNewWord = wordList[random.randrange(0,len(wordList))]
+        self.theOldWord = self.theNewWord
+        return self.theNewWord
+    def oldWord(self):
+        if self.theOldWord == None:
+            self.newWord()
+        else:
+            return self.theOldWord
 
+dealer = WordDealer()
+#print(dealer.newWord())
+#print(dealer.oldWord())
 
 
 def wordIsCorrect(msgValue):
-    global theWord
     # Making it case-insensitive and eliminating trailing whitspace
+    theWord = dealer.oldWord()
     msgValue = msgValue.strip().upper().lower()
     theWord = theWord.strip().upper().lower()
     if msgValue == theWord:
@@ -53,6 +109,7 @@ def msgInterpreter(data,sock):
     # chars because I wanted the ability for players to chat with each other, starting the msg with //.
     # A msg containing just a word is treated as a word guess.
     # The server responds with messages divided in sections by colons.
+    theWord = dealer.oldWord()
     msgParts = data.decode().strip().split("//")
     if len(msgParts) == 2: # All message types, except for Word Guesses, are made out of 2 elements.
         msgType = msgParts[0]
@@ -62,10 +119,12 @@ def msgInterpreter(data,sock):
         if msgTypeLength < 1:
             msgType = "//"
             print(f"Msg recognized as chat message from player {playerNames[sock.fileno()]}")
-            data = str(msgType+":"+str(playerNames[sock.fileno()])+":"+str(msgValue).strip())
             if msgValue == "Ooooooh! I can see it now!":
-                data = str("CH:"+str(playerNames[sock.fileno()])+":"+theWord)
-            data = data.encode()
+                with calm: data = str("CH:"+str(playerNames[sock.fileno()])+":"+theWord)
+
+            else:
+                with calm: data = str(msgType+":"+str(playerNames[sock.fileno()])+":"+str(msgValue).strip())
+            with calm: data = data.encode()
 
         if msgType == "SN":
             print("Msg recognized as Set Name command)")
@@ -78,6 +137,15 @@ def msgInterpreter(data,sock):
             print(f"Msg recognized as paint data from player {playerNames[sock.fileno()]}: {msgValue}")
             data = str("CO:"+str(playerNames[sock.fileno()])+":"+str(msgValue))
             data = data.encode()
+
+        with calm:
+            if msgType == "NW":
+                 print(f"Msg recognized as New Word request from player {playerNames[sock.fileno()]}")
+                 theWord = dealer.newWord()
+                 playerSettings = str(msgValue)
+                 data = str("NW:"+str(playerNames[sock.fileno()])+":"+str(theWord))
+                 print(data)
+                 data = data.encode()
 
     elif len(msgParts) == 1:
         # The lack the split divider "//" indicates this is a word guess.
